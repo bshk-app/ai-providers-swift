@@ -14,11 +14,26 @@ public actor DictatorClient {
 
     /// BYOK never calls the account API or issues a temporary gateway key.
     public init(gatewayURL: URL, apiKey: String, session: URLSession? = nil) throws {
+        let gatewayURL = try Self.canonicalGatewayURL(gatewayURL)
         guard gatewayURL.scheme == "https", gatewayURL.host != nil,
               gatewayURL.user == nil, gatewayURL.password == nil, gatewayURL.query == nil, gatewayURL.fragment == nil else { throw DictatorError.insecureURL }
         guard !apiKey.isEmpty, !apiKey.contains("\r"), !apiKey.contains("\n") else { throw DictatorError.unauthorized("Missing API key") }
         self.controlURL = gatewayURL; self.gatewayURL = gatewayURL; userAPIKey = apiKey
         self.session = session ?? URLSession(configuration: .ephemeral, delegate: BYOKDelegate(), delegateQueue: nil)
+    }
+
+    /// Accept a gateway base or a documented operation URL pasted from integration docs.
+    public static func canonicalGatewayURL(_ url: URL) throws -> URL {
+        guard url.scheme == "https", url.host != nil, url.user == nil, url.password == nil, url.query == nil, url.fragment == nil else { throw DictatorError.insecureURL }
+        var parts = URLComponents(url: url, resolvingAgainstBaseURL: false)!
+        var path = parts.path
+        while path.hasSuffix("/") { path.removeLast() }
+        for suffix in ["/v1/audio/transcriptions", "/v1/stream", "/v1/translate"] where path.hasSuffix(suffix) {
+            path.removeLast(suffix.count - 3) // retain the /v1 base
+            break
+        }
+        parts.path = path
+        guard let result = parts.url else { throw DictatorError.insecureURL }; return result
     }
 
     public init(controlURL: URL, gatewayURL: URL? = nil, session: URLSession? = nil) throws {
@@ -90,6 +105,20 @@ public actor DictatorClient {
         return (gatewayURL!, key!.value)
     }
     public func transcribe(audio: Data, options: TranscriptionOptions = .init()) async throws -> TranscriptionResult {
+        try await transcribe(audio: audio, options: options, timeout: 900)
+    }
+    /// Zero-duration PCM WAV validates the real authenticated batch contract.
+    /// No microphone, user audio, temporary key, or nonzero audio units.
+    public func checkConnection() async throws {
+        guard userAPIKey != nil else { throw DictatorError.unauthorized("An API key is required") }
+        var wav = Data("RIFF".utf8)
+        wav.append(contentsOf: [36,0,0,0]); wav.append(Data("WAVEfmt ".utf8))
+        wav.append(contentsOf: [16,0,0,0,1,0,1,0,128,62,0,0,0,125,0,0,2,0,16,0])
+        wav.append(Data("data".utf8)); wav.append(contentsOf: [0,0,0,0])
+        let result = try await transcribe(audio: wav, options: .init(tier: .quality, filename: "connection-check.wav"), timeout: 30)
+        guard result.audioSeconds == 0 else { throw DictatorError.invalidResponse }
+    }
+    private func transcribe(audio: Data, options: TranscriptionOptions, timeout: Double) async throws -> TranscriptionResult {
         guard audio.count <= 32 * 1024 * 1024 else { throw DictatorError.invalidAudio }
         var fields = ["tier": options.tier.rawValue.lowercased()]
         if let value = options.language { fields["language"] = value }
@@ -99,7 +128,7 @@ public actor DictatorClient {
         var body = multipart(fields, boundary: boundary)
         body.append(Data("--\(boundary)\r\nContent-Disposition: form-data; name=\"file\"; filename=\"\(filename)\"\r\nContent-Type: application/octet-stream\r\n\r\n".utf8))
         body.append(audio); body.append(Data("\r\n--\(boundary)--\r\n".utf8))
-        let data = try await cloud("/v1/audio/transcriptions", body: body, boundary: boundary, timeout: 900)
+        let data = try await cloud("/v1/audio/transcriptions", body: body, boundary: boundary, timeout: timeout)
         return try JSONDecoder().decode(TranscriptionResult.self, from: data)
     }
     public func translate(text: String, from: String, to: String, requestID: UUID = UUID()) async throws -> TranslationResult {

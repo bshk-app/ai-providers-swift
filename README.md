@@ -1,7 +1,7 @@
 # AI Providers for Swift
 
-Reusable Foundation clients for macOS 14+ and iOS 18+. No Murmator, SwiftUI,
-MLX, microphone capture, shell, or agent runtime dependency in the shared contracts.
+Reusable Foundation clients for macOS 14+ and iOS 18+, plus an optional SwiftUI model browser.
+The shared contracts have no Murmator, SwiftUI, MLX, microphone capture, shell, or agent runtime dependency.
 The macOS sign-in helper uses AppKit and Network only when its auth product is imported.
 
 A standalone package for `bshk-app/ai-providers-swift`. Import only the
@@ -13,8 +13,9 @@ SwiftPM products required by your application.
 | --- | --- |
 | AIProvidersCore | Connection identity, model kind, operation capabilities, HTTP and provider contracts |
 | AIProvidersAuth | App-scoped Keychain, ChatGPT registration/PKCE, verified ID tokens, refresh, macOS loopback sign-in |
-| AITextProviders | OpenAI Responses (BYOK or ChatGPT plan), Anthropic Messages (BYOK) |
+| AITextProviders | OpenAI Responses (BYOK or ChatGPT plan), Anthropic Messages, OpenRouter / Featherless / generic Chat Completions (BYOK) |
 | AISpeechProviders | Deepgram Nova WebSocket/file ASR, OpenAI file ASR (BYOK) |
+| AIProviderViews | Optional searchable model sheet, debounce, paging, cancellation, English/Russian resources |
 | AIServiceProviders | Dictator BYOK ASR, streaming and text translation |
 | DictatorCore | Canonical Dictator service client; direct API key or separately selected legacy account mode |
 | DictatorAppleAuth | Optional legacy account/Apple sign-in helpers |
@@ -71,3 +72,38 @@ separate user-authorized qualification. No user audio is included in this packag
 Official contracts used: [OpenAI plan inference](https://developers.openai.com/siwc/token-sharing-open-source/models-and-inference),
 [OpenAI registration](https://developers.openai.com/siwc/token-sharing-open-source/sign-in),
 [Deepgram CloseStream](https://developers.deepgram.com/docs/close-stream).
+
+## Compatible providers and large catalogs
+
+`CompatibleTextProvider(endpoint:service:http:credential:)` uses `/chat/completions`,
+not OpenAI Responses. Select `.featherless`, `.openRouter`, or `.generic` for a
+self-hosted/OpenAI-compatible endpoint. Model IDs are not restricted to GPT/o
+names; explicit input/output modalities exclude non-text models. Incomplete,
+refused and empty output is rejected rather than used as a correction.
+
+`AIModelCatalogProviding.modelPage(query:cursor:)` returns an `AIModelPage` with
+models, the next opaque cursor and an optional total. Its `models()` convenience
+returns only the initial page. Featherless searches remotely in 100-model pages;
+OpenRouter returns a complete catalog and filters by ID/name. Apps can cache the
+smaller catalog in memory. Do not treat a first page as the entire catalog or
+persist tens of thousands of models in preferences.
+
+`verifyConnection()` checks Featherless `/plan` and OpenRouter `/key` separately
+because their model catalogs can be public. Generic compatible endpoints expose
+no universal authenticated probe; listing their models does not verify a key.
+
+`AIProviderViews.AIModelBrowser` is an optional SwiftUI sheet. Inject a paged search
+closure and explicit `onSelect`/`onCancel`. It owns no credentials or provider
+settings and never selects a model automatically. Search is debounced, obsolete
+answers are ignored, and the current model remains pinned above the results.
+
+Dictator accepts a gateway base or a pasted documented operation URL via
+`canonicalEndpoint`. `checkConnection()` makes one authenticated batch request
+with a valid zero-duration WAV, no microphone/user audio or temporary key.
+It validates batch access, not recognition quality, streaming or translation.
+
+Contracts: [Featherless models](https://featherless.ai/docs/api-reference-models),
+[Featherless Chat Completions](https://featherless.ai/docs/completions),
+[Featherless plan](https://featherless.ai/docs/api-reference-plan),
+[OpenRouter models](https://openrouter.ai/docs/api/api-reference/models/list-all-models-and-their-properties),
+[OpenRouter key](https://openrouter.ai/docs/api/api-reference/api-keys/get-current-api-key).

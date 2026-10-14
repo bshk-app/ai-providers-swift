@@ -13,6 +13,11 @@ public struct DictatorProvider: AISpeechProviding, AITranslationProviding {
     public static let profiles: [AIModel] = ["fast", "hybrid", "quality"].map {
         .init(id: $0, name: "Dictator · \($0.capitalized)", kind: .speechProfile, operations: [.transcription, .streamingTranscription])
     }
+    public static func canonicalEndpoint(_ endpoint: URL) throws -> URL { try DictatorClient.canonicalGatewayURL(endpoint) }
+    public func checkConnection() async throws {
+        do { try await client.checkConnection() }
+        catch { throw Self.publicError(error) }
+    }
     private func tier(_ model: String) throws -> Tier {
         guard let tier = Tier(rawValue: model.uppercased()) else { throw AIProviderError.unsupported }; return tier
     }

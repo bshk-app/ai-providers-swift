@@ -19,8 +19,18 @@ public struct AIModel: Codable, Identifiable, Equatable, Sendable {
     public var name: String
     public var kind: AIModelKind
     public var operations: Set<AIOperation>
-    public init(id: String, name: String, kind: AIModelKind, operations: Set<AIOperation>) {
-        self.id = id; self.name = name; self.kind = kind; self.operations = operations
+    public var contextLength: Int?
+    public var available: Bool?
+    public init(id: String, name: String, kind: AIModelKind, operations: Set<AIOperation>, contextLength: Int? = nil, available: Bool? = nil) {
+        self.id = id; self.name = name; self.kind = kind; self.operations = operations; self.contextLength = contextLength; self.available = available
+    }
+}
+public struct AIModelPage: Sendable {
+    public let models: [AIModel]
+    public let nextCursor: String?
+    public let total: Int?
+    public init(models: [AIModel], nextCursor: String? = nil, total: Int? = nil) {
+        self.models = models; self.nextCursor = nextCursor; self.total = total
     }
 }
 public struct AISelection: Codable, Equatable, Sendable {
@@ -41,6 +51,12 @@ public struct AITextRequest: Sendable {
 public protocol AITextProviding: Sendable {
     func models() async throws -> [AIModel]
     func generate(_ request: AITextRequest) async throws -> String
+}
+public protocol AIModelCatalogProviding: AITextProviding {
+    func modelPage(query: String, cursor: String?) async throws -> AIModelPage
+}
+public extension AIModelCatalogProviding {
+    func models() async throws -> [AIModel] { try await modelPage(query: "", cursor: nil).models }
 }
 public struct AISpeechRequest: Sendable {
     public let model: String
