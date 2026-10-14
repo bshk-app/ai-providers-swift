@@ -20,6 +20,18 @@ final class MockHTTP: URLProtocol, @unchecked Sendable {
         } catch { client?.urlProtocol(self, didFailWithError: error) }
     }
     override func stopLoading() {}
+    static func body(_ request: URLRequest) throws -> Data {
+        if let data = request.httpBody { return data }
+        guard let stream = request.httpBodyStream else { return Data() }
+        stream.open(); defer { stream.close() }
+        var data = Data(), buffer = [UInt8](repeating: 0, count: 4096)
+        while true {
+            let count = stream.read(&buffer, maxLength: buffer.count)
+            guard count >= 0 else { throw stream.streamError ?? AIProviderError.invalidResponse }
+            if count == 0 { return data }
+            data.append(contentsOf: buffer.prefix(count))
+        }
+    }
 }
 final class ProviderTests: XCTestCase {
     private func http() -> AIHTTP {
@@ -106,6 +118,17 @@ final class ProviderTests: XCTestCase {
             let provider = OpenAITextProvider(auth: .chatGPTPlan, http: http(), credential: { "test-token" })
             do { _ = try await provider.generate(.init(model: "test-model", instructions: "Edit.", text: "Original")); XCTFail("Incomplete output must not be committed") }
             catch { XCTAssertEqual(error as? AIProviderError, .interrupted) }
+        }
+    }
+    func testInteractiveCorrectionSetsOnlySupportedReasoningEffort() async throws {
+        for (model, effort) in [("gpt-5.6-terra", "none"), ("gpt-6-luna", "none"), ("gpt-6-astra", "low"), ("gpt-6.1-sol", "low"), ("custom-model", nil)] {
+            MockHTTP.handle = { request in
+                let body = try JSONSerialization.jsonObject(with: MockHTTP.body(request)) as! [String: Any]
+                XCTAssertEqual((body["reasoning"] as? [String: String])?["effort"], effort)
+                return (200, Data("data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"output\":[{\"content\":[{\"type\":\"output_text\",\"text\":\"Final.\"}]}]}}\n\n".utf8))
+            }
+            let provider = OpenAITextProvider(auth: .chatGPTPlan, http: http(), credential: { "test" })
+            _ = try await provider.generate(.init(model: model, instructions: "Edit.", text: "Final", latency: .interactive))
         }
     }
     func testPartialResponsesAreRejectedOnEOF() throws {

@@ -34,8 +34,11 @@ public struct OpenAITextProvider: AITextProviding {
         try validateAuthEndpoint()
         // This body is supported by both API keys and the ChatGPT plan route.
         // Never add preview-unsupported sampling/token fields to the plan body.
-        let body: [String: Any] = ["model": request.model, "instructions": request.instructions,
+        var body: [String: Any] = ["model": request.model, "instructions": request.instructions,
             "input": [["role": "user", "content": request.text]], "store": false, "stream": true]
+        if request.latency == .interactive, let effort = Self.interactiveEffort(for: request.model) {
+            body["reasoning"] = ["effort": effort]
+        }
         var query = try await AIHTTP.request(AIEndpoint.url(endpoint, path: "responses"), token: credential(), method: "POST", json: body)
         query.setValue("text/event-stream", forHTTPHeaderField: "Accept")
         let (bytes, response) = try await http.session.bytes(for: query)
@@ -58,6 +61,15 @@ public struct OpenAITextProvider: AITextProviding {
     }
     private func validateAuthEndpoint() throws {
         if auth == .chatGPTPlan, endpoint.absoluteString.trimmingCharacters(in: CharacterSet(charactersIn: "/")) != "https://api.openai.com/v1" { throw AIProviderError.unsupported }
+    }
+    // Only documented model families: unknown/custom models keep their own
+    // defaults rather than receiving an unsupported reasoning parameter.
+    static func interactiveEffort(for model: String) -> String? {
+        if model == "gpt-6-astra" || model.hasPrefix("gpt-6-astra-") || model == "gpt-6.1-sol" || model.hasPrefix("gpt-6.1-sol-") { return "low" }
+        for family in ["gpt-5.6", "gpt-6-luna", "gpt-6-sol"] {
+            if model == family || model.hasPrefix(family + "-") { return "none" }
+        }
+        return nil
     }
 }
 

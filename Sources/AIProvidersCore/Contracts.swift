@@ -28,11 +28,15 @@ public struct AISelection: Codable, Equatable, Sendable {
     public let modelID: String
     public init(connectionID: UUID, modelID: String) { self.connectionID = connectionID; self.modelID = modelID }
 }
+public enum AITextLatency: Sendable { case standard, interactive }
 public struct AITextRequest: Sendable {
     public let model: String
     public let instructions: String
     public let text: String
-    public init(model: String, instructions: String, text: String) { self.model = model; self.instructions = instructions; self.text = text }
+    public let latency: AITextLatency
+    public init(model: String, instructions: String, text: String, latency: AITextLatency = .standard) {
+        self.model = model; self.instructions = instructions; self.text = text; self.latency = latency
+    }
 }
 public protocol AITextProviding: Sendable {
     func models() async throws -> [AIModel]
