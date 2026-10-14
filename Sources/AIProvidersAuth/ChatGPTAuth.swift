@@ -84,9 +84,12 @@ public actor ChatGPTTokenStore {
     private let id: UUID
     private let http: AIHTTP
     private var refreshing: Task<String, Error>?
+    private var refreshID: UUID?
+    private var waiters: [UUID: CheckedContinuation<String, Error>] = [:]
     public init(vault: AICredentialVault, id: UUID, http: AIHTTP = AIHTTP()) { self.vault = vault; self.id = id; self.http = http }
     public func token() async throws -> String {
-        if let refreshing { return try await refreshing.value }
+        try Task.checkCancellation()
+        if let refreshing, let refreshID { return try await wait(for: refreshing, refreshID: refreshID) }
         var session = try JSONDecoder().decode(ChatGPTSession.self, from: vault.read(id))
         guard session.scopes.contains("chatgpt.tokens.use.direct") else { throw AIProviderError.unsupported }
         if session.expiresAt > Date().addingTimeInterval(60) { return session.accessToken }
@@ -104,7 +107,41 @@ public actor ChatGPTTokenStore {
             try vault.replace(JSONEncoder().encode(session), id: id)
             return session.accessToken
         }
-        refreshing = task; defer { refreshing = nil }; return try await task.value
+        let id = UUID()
+        refreshing = task; refreshID = id
+        Task { [self] in
+            let result = await task.result
+            finishRefresh(id, result: result)
+        }
+        return try await wait(for: task, refreshID: id)
+    }
+    private func wait(for task: Task<String, Error>, refreshID expected: UUID) async throws -> String {
+        // The refresh can finish between entering token() and registering.
+        if refreshID != expected {
+            let value = try await task.value; try Task.checkCancellation(); return value
+        }
+        let id = UUID()
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                waiters[id] = continuation
+                if Task.isCancelled { cancelWaiter(id) }
+            }
+        } onCancel: {
+            Task { await self.cancelWaiter(id) }
+        }
+    }
+    private func cancelWaiter(_ id: UUID) {
+        waiters.removeValue(forKey: id)?.resume(throwing: CancellationError())
+        // Refresh-token rotation is account state. Finish it atomically even
+        // when this text request stops waiting, so a rotated token is not lost
+        // and another consumer can still share the same in-flight refresh.
+    }
+    private func finishRefresh(_ id: UUID, result: Result<String, Error>) {
+        guard refreshID == id else { return }
+        refreshing = nil; refreshID = nil
+        let pending = Array(waiters.values)
+        waiters.removeAll()
+        for waiter in pending { waiter.resume(with: result) }
     }
 }
 private enum ChatGPTIDToken {

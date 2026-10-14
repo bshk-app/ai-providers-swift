@@ -5,6 +5,57 @@ import AIProvidersAuth
 import AIProvidersCore
 
 final class ChatGPTVerificationTests: XCTestCase {
+    func testCancelledWaiterDoesNotLoseARotatedTokenOrRestartTheRefresh() async throws {
+        let vault = AICredentialVault(service: "provider-refresh-test-\(UUID())"), id = UUID()
+        let fixture: [String: Any] = ["accessToken": "expired-test", "refreshToken": "refresh-test", "idToken": "verified-test",
+            "clientID": "test-client", "subject": "test-subject", "scopes": ["chatgpt.tokens.use.direct"],
+            "expiresAt": Date().addingTimeInterval(-60).timeIntervalSinceReferenceDate]
+        try vault.write(JSONSerialization.data(withJSONObject: fixture), id: id)
+        defer { try? vault.remove(id) }
+        let requested = expectation(description: "refresh started")
+        MockHTTP.finishDelay = 0.25
+        defer { MockHTTP.finishDelay = 0 }
+        var requests = 0
+        MockHTTP.handle = { _ in
+            requests += 1; requested.fulfill()
+            return (200, Data("{\"access_token\":\"fresh-test\",\"refresh_token\":\"rotated-test\",\"token_type\":\"Bearer\",\"expires_in\":3600,\"scope\":\"chatgpt.tokens.use.direct\"}".utf8))
+        }
+        let store = ChatGPTTokenStore(vault: vault, id: id, http: http())
+        let first = Task { try await store.token() }
+        await fulfillment(of: [requested], timeout: 2)
+        let second = Task { try await store.token() }
+        first.cancel()
+        do { _ = try await first.value; XCTFail("cancelled waiter returned a token") } catch is CancellationError {}
+        let token = try await second.value
+        XCTAssertEqual(token, "fresh-test")
+        XCTAssertEqual(requests, 1)
+        let saved = try JSONDecoder().decode(ChatGPTSession.self, from: vault.read(id))
+        XCTAssertEqual(saved.refreshToken, "rotated-test")
+    }
+    func testCancellingExpiredTokenWaitDoesNotWaitForTheRefreshTimeout() async throws {
+        let vault = AICredentialVault(service: "provider-refresh-test-\(UUID())"), id = UUID()
+        let fixture: [String: Any] = ["accessToken": "expired-test", "refreshToken": "refresh-test", "idToken": "verified-test",
+            "clientID": "test-client", "subject": "test-subject", "scopes": ["chatgpt.tokens.use.direct"],
+            "expiresAt": Date().addingTimeInterval(-60).timeIntervalSinceReferenceDate]
+        try vault.write(JSONSerialization.data(withJSONObject: fixture), id: id)
+        defer { try? vault.remove(id) }
+        let requested = expectation(description: "refresh started")
+        MockHTTP.finishesLoading = false
+        defer { MockHTTP.finishesLoading = true }
+        MockHTTP.handle = { _ in requested.fulfill(); return (200, Data("{}".utf8)) }
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [MockHTTP.self]; config.timeoutIntervalForResource = 2
+        let session = URLSession(configuration: config)
+        defer { session.invalidateAndCancel() }
+        let store = ChatGPTTokenStore(vault: vault, id: id, http: AIHTTP(session: session))
+        let token = Task { try await store.token() }
+        await fulfillment(of: [requested], timeout: 2)
+        let start = Date()
+        token.cancel()
+        do { _ = try await token.value; XCTFail("cancelled refresh returned a token") }
+        catch { XCTAssertTrue(error is CancellationError || (error as? URLError)?.code == .cancelled) }
+        XCTAssertLessThan(Date().timeIntervalSince(start), 1, "force-submit must not wait for OAuth's network timeout")
+    }
     private func encoded(_ data: Data) -> String { data.base64EncodedString().replacingOccurrences(of: "+", with: "-").replacingOccurrences(of: "/", with: "_").replacingOccurrences(of: "=", with: "") }
     private func http() -> AIHTTP {
         let config = URLSessionConfiguration.ephemeral; config.protocolClasses = [MockHTTP.self]

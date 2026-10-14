@@ -9,6 +9,7 @@ import AIServiceProviders
 final class MockHTTP: URLProtocol, @unchecked Sendable {
     static var handle: ((URLRequest) throws -> (Int, Data))?
     static var finishesLoading = true
+    static var finishDelay: TimeInterval = 0
     override class func canInit(with request: URLRequest) -> Bool { true }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
     override func startLoading() {
@@ -16,7 +17,14 @@ final class MockHTTP: URLProtocol, @unchecked Sendable {
             let (status, data) = try Self.handle!(request)
             client?.urlProtocol(self, didReceive: HTTPURLResponse(url: request.url!, statusCode: status, httpVersion: "HTTP/1.1", headerFields: ["Content-Type": "text/event-stream"])!, cacheStoragePolicy: .notAllowed)
             client?.urlProtocol(self, didLoad: data)
-            if Self.finishesLoading { client?.urlProtocolDidFinishLoading(self) }
+            if Self.finishesLoading {
+                if Self.finishDelay == 0 { client?.urlProtocolDidFinishLoading(self) }
+                else {
+                    DispatchQueue.global().asyncAfter(deadline: .now() + Self.finishDelay) { [self] in
+                        client?.urlProtocolDidFinishLoading(self)
+                    }
+                }
+            }
         } catch { client?.urlProtocol(self, didFailWithError: error) }
     }
     override func stopLoading() {}
