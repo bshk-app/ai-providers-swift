@@ -1,0 +1,13 @@
+name: Swift providers
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - name: Shared contracts, authentication and transport fixtures
+        run: swift test
+      - name: Compile Apple mobile products
+        run: swift build --triple arm64-apple-ios18.0 --sdk "$(xcrun --sdk iphoneos --show-sdk-path)" --scratch-path .build-ios

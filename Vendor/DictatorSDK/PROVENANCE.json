@@ -1,0 +1,14 @@
+{
+  "upstream": "dictator-saas/packages/swift-sdk",
+  "version": "0.1.0",
+  "files": {
+    "Package.swift": "e9cb59960881c89f1c773bb812e2c1c021d80f7319e0bd42361c9727b3c7727b",
+    "README.md": "37674bd9f3be4b1d35ceb15f3b43bf03d4b10ebd678d4e319ba250b11ea02b6d",
+    "Sources/DictatorAppleAuth/AppleSignIn.swift": "ee7cc915b6c0f131e9a8054a787e24ba890465e9d5d1ec481bba37d6a2c40588",
+    "Sources/DictatorAppleAuth/KeychainSessionStore.swift": "8001c8da593de815579074f642abb341d38b016e6b27c3da3b021099339449d6",
+    "Sources/DictatorCore/DictatorClient.swift": "748851d3b9e82ae24a60bb91164f22654fdb59b31bb3bc2931106ff94b0cb8bd",
+    "Sources/DictatorCore/DictatorStream.swift": "e3a17552f2638eed41bc5930231db921a50166e566157eab9034a301ef465df0",
+    "Sources/DictatorCore/Types.swift": "e45ae498b5846ed83abaf05cc6ec0f89c4bc6d80b1070e805911f926ba83a7e8",
+    "Tests/DictatorCoreTests/ClientTests.swift": "bc57add84226be7ab46e85d9fecfdd2b0b3648adc741d7051f2ec99e2d0205dd"
+  }
+}
