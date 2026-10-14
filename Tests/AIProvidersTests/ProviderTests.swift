@@ -58,6 +58,39 @@ final class ProviderTests: XCTestCase {
         let models = try await OpenAITextProvider(http: http(), credential: { "test" }).models()
         XCTAssertEqual(models.map(\.id), ["gpt-current"])
     }
+    func testGenerateConsumesActualWireSSEIncludingBlankFrameBoundaries() async throws {
+        let wire = """
+        data: {"type":"response.output_text.delta","delta":"Проверяю "}
+
+        data: {"type":"response.output_text.delta","delta":"корректор."}
+
+        data: {"type":"response.completed","response":{"status":"completed","output":[{"content":[{"type":"output_text","text":"Проверяю корректор."}]}]}}
+
+        """
+        MockHTTP.handle = { _ in (200, Data(wire.utf8)) }
+        let provider = OpenAITextProvider(auth: .chatGPTPlan, http: http(), credential: { "test-token" })
+        let result = try await provider.generate(.init(model: "test-model", instructions: "Correct text.", text: "Проверяю корректор"))
+        XCTAssertEqual(result, "Проверяю корректор.")
+    }
+    func testByteDecoderPreservesEmptyLinesForAllSSELineEndings() throws {
+        for ending in ["\n", "\r\n", "\r"] {
+            var decoder = SSEByteLines()
+            var lines: [String] = []
+            for byte in Data(("\u{FEFF}data: Привет" + ending + ending + "data: Мир" + ending + ending).utf8) {
+                if let line = try decoder.accept(byte) { lines.append(line) }
+            }
+            XCTAssertEqual(lines, ["data: Привет", "", "data: Мир", ""])
+        }
+    }
+    func testWireStreamRejectsLateQuotaAndTruncatedOutput() async throws {
+        for terminal in ["", "data: {\"type\":\"response.failed\",\"response\":{\"error\":{\"code\":\"subscription_sharing_usage_limit_exceeded\"}}}\r\n\r\n"] {
+            let wire = "data: {\"type\":\"response.output_text.delta\",\"delta\":\"Partial\"}\r\n\r\n" + terminal
+            MockHTTP.handle = { _ in (200, Data(wire.utf8)) }
+            let provider = OpenAITextProvider(auth: .chatGPTPlan, http: http(), credential: { "test-token" })
+            do { _ = try await provider.generate(.init(model: "test-model", instructions: "Edit.", text: "Original")); XCTFail("Incomplete output must not be committed") }
+            catch { XCTAssertEqual(error as? AIProviderError, .interrupted) }
+        }
+    }
     func testPartialResponsesAreRejectedOnEOF() throws {
         var parser = ResponsesStreamParser()
         try parser.accept("data: {\"type\":\"response.output_text.delta\",\"delta\":\"partial\"}"); try parser.accept("")

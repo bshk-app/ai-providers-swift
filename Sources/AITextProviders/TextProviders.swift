@@ -36,19 +36,48 @@ public struct OpenAITextProvider: AITextProviding {
         // Never add preview-unsupported sampling/token fields to the plan body.
         let body: [String: Any] = ["model": request.model, "instructions": request.instructions,
             "input": [["role": "user", "content": request.text]], "store": false, "stream": true]
-        let query = try await AIHTTP.request(AIEndpoint.url(endpoint, path: "responses"), token: credential(), method: "POST", json: body)
+        var query = try await AIHTTP.request(AIEndpoint.url(endpoint, path: "responses"), token: credential(), method: "POST", json: body)
+        query.setValue("text/event-stream", forHTTPHeaderField: "Accept")
         let (bytes, response) = try await http.session.bytes(for: query)
         try AIHTTP.check(response)
         var parser = ResponsesStreamParser()
-        for try await line in bytes.lines {
+        var lines = SSEByteLines()
+        for try await byte in bytes {
             try Task.checkCancellation()
-            try parser.accept(line)
+            if let line = try lines.accept(byte) { try parser.accept(line) }
         }
+        if let line = try lines.finish() { try parser.accept(line) }
         return try parser.result()
     }
     private func validateAuthEndpoint() throws {
         if auth == .chatGPTPlan, endpoint.absoluteString.trimmingCharacters(in: CharacterSet(charactersIn: "/")) != "https://api.openai.com/v1" { throw AIProviderError.unsupported }
     }
+}
+
+/// Foundation AsyncBytes.lines omits empty lines, which are SSE frame
+/// boundaries. Decode bytes directly, preserving LF, CRLF and lone CR frames.
+public struct SSEByteLines {
+    private var buffer: [UInt8] = []
+    private var afterCR = false
+    private var firstLine = true
+    public init() {}
+    public mutating func accept(_ byte: UInt8) throws -> String? {
+        if byte == 10 {
+            if afterCR { afterCR = false; return nil }
+            return try line()
+        }
+        if byte == 13 { afterCR = true; return try line() }
+        afterCR = false; buffer.append(byte)
+        guard buffer.count <= 1_048_576 else { throw AIProviderError.outputLimit }
+        return nil
+    }
+    private mutating func line() throws -> String {
+        guard var value = String(bytes: buffer, encoding: .utf8) else { throw AIProviderError.invalidResponse }
+        buffer.removeAll(keepingCapacity: true)
+        if firstLine { firstLine = false; if value.first == "\u{FEFF}" { value.removeFirst() } }
+        return value
+    }
+    public mutating func finish() throws -> String? { buffer.isEmpty ? nil : try line() }
 }
 
 /// Consumes complete SSE data frames. Partial output is never a successful edit.
