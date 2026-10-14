@@ -39,12 +39,19 @@ public struct OpenAITextProvider: AITextProviding {
         var query = try await AIHTTP.request(AIEndpoint.url(endpoint, path: "responses"), token: credential(), method: "POST", json: body)
         query.setValue("text/event-stream", forHTTPHeaderField: "Accept")
         let (bytes, response) = try await http.session.bytes(for: query)
+        defer { bytes.task.cancel() }
         try AIHTTP.check(response)
         var parser = ResponsesStreamParser()
         var lines = SSEByteLines()
         for try await byte in bytes {
             try Task.checkCancellation()
-            if let line = try lines.accept(byte) { try parser.accept(line) }
+            if let line = try lines.accept(byte) {
+                try parser.accept(line)
+                // response.completed is the terminal result. A gateway can
+                // keep the HTTP stream open afterwards; waiting for EOF loses
+                // valid output to a transport timeout minutes later.
+                if parser.isComplete { return try parser.result() }
+            }
         }
         if let line = try lines.finish() { try parser.accept(line) }
         return try parser.result()
@@ -84,7 +91,7 @@ public struct SSEByteLines {
 public struct ResponsesStreamParser {
     private var data: [String] = []
     private var output = ""
-    private var completed = false
+    public private(set) var isComplete = false
     public init() {}
     public mutating func accept(_ line: String) throws {
         if line.isEmpty { try flush(); return }
@@ -102,7 +109,7 @@ public struct ResponsesStreamParser {
         } else if ["response.failed", "response.incomplete", "error", "response.refusal.done"].contains(type) { throw AIProviderError.interrupted }
         else if type == "response.completed" {
             guard let response = json["response"] as? [String: Any], response["status"] as? String == "completed" else { throw AIProviderError.interrupted }
-            completed = true
+            isComplete = true
             if let items = response["output"] as? [[String: Any]] {
                 let text = items.flatMap { $0["content"] as? [[String: Any]] ?? [] }.filter { $0["type"] as? String == "output_text" }.compactMap { $0["text"] as? String }.joined()
                 if !text.isEmpty { output = text }
@@ -111,7 +118,7 @@ public struct ResponsesStreamParser {
     }
     public mutating func result() throws -> String {
         try flush()
-        guard completed, !output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw AIProviderError.interrupted }
+        guard isComplete, !output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw AIProviderError.interrupted }
         return output
     }
 }

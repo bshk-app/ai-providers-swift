@@ -8,13 +8,15 @@ import AIServiceProviders
 
 final class MockHTTP: URLProtocol, @unchecked Sendable {
     static var handle: ((URLRequest) throws -> (Int, Data))?
+    static var finishesLoading = true
     override class func canInit(with request: URLRequest) -> Bool { true }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
     override func startLoading() {
         do {
             let (status, data) = try Self.handle!(request)
-            client?.urlProtocol(self, didReceive: HTTPURLResponse(url: request.url!, statusCode: status, httpVersion: nil, headerFields: nil)!, cacheStoragePolicy: .notAllowed)
-            client?.urlProtocol(self, didLoad: data); client?.urlProtocolDidFinishLoading(self)
+            client?.urlProtocol(self, didReceive: HTTPURLResponse(url: request.url!, statusCode: status, httpVersion: "HTTP/1.1", headerFields: ["Content-Type": "text/event-stream"])!, cacheStoragePolicy: .notAllowed)
+            client?.urlProtocol(self, didLoad: data)
+            if Self.finishesLoading { client?.urlProtocolDidFinishLoading(self) }
         } catch { client?.urlProtocol(self, didFailWithError: error) }
     }
     override func stopLoading() {}
@@ -81,6 +83,21 @@ final class ProviderTests: XCTestCase {
             }
             XCTAssertEqual(lines, ["data: Привет", "", "data: Мир", ""])
         }
+    }
+    func testCompletedResponseReturnsWithoutWaitingForConnectionEOF() async throws {
+        MockHTTP.finishesLoading = false
+        defer { MockHTTP.finishesLoading = true }
+        MockHTTP.handle = { _ in
+            (200, Data("data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"output\":[{\"content\":[{\"type\":\"output_text\",\"text\":\"Finished.\"}]}]}}\n\n".utf8))
+        }
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [MockHTTP.self]
+        config.timeoutIntervalForResource = 2
+        let session = URLSession(configuration: config)
+        defer { session.invalidateAndCancel() }
+        let provider = OpenAITextProvider(http: AIHTTP(session: session), credential: { "test" })
+        let result = try await provider.generate(.init(model: "test", instructions: "Edit.", text: "Finished"))
+        XCTAssertEqual(result, "Finished.")
     }
     func testWireStreamRejectsLateQuotaAndTruncatedOutput() async throws {
         for terminal in ["", "data: {\"type\":\"response.failed\",\"response\":{\"error\":{\"code\":\"subscription_sharing_usage_limit_exceeded\"}}}\r\n\r\n"] {
