@@ -7,6 +7,10 @@ public actor DictatorClient {
     private var sessionToken: String?
     private var key: (value: String, expiresAt: Double)?
     private var userAPIKey: String?
+    private final class BYOKDelegate: NSObject, URLSessionTaskDelegate {
+        func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
+                        newRequest request: URLRequest, completionHandler: @escaping (URLRequest?) -> Void) { completionHandler(nil) }
+    }
 
     /// BYOK never calls the account API or issues a temporary gateway key.
     public init(gatewayURL: URL, apiKey: String, session: URLSession? = nil) throws {
@@ -14,7 +18,7 @@ public actor DictatorClient {
               gatewayURL.user == nil, gatewayURL.password == nil, gatewayURL.query == nil, gatewayURL.fragment == nil else { throw DictatorError.insecureURL }
         guard !apiKey.isEmpty, !apiKey.contains("\r"), !apiKey.contains("\n") else { throw DictatorError.unauthorized("Missing API key") }
         self.controlURL = gatewayURL; self.gatewayURL = gatewayURL; userAPIKey = apiKey
-        self.session = session ?? URLSession(configuration: .ephemeral)
+        self.session = session ?? URLSession(configuration: .ephemeral, delegate: BYOKDelegate(), delegateQueue: nil)
     }
 
     public init(controlURL: URL, gatewayURL: URL? = nil, session: URLSession? = nil) throws {

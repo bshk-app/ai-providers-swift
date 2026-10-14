@@ -7,3 +7,5 @@ calling mobile capabilities, login, or temporary-key issuance. The original
 account/session initializer remains for the existing separately selected mobile
 account integration. Parent package tests cover direct-key routing and refusal
 without retries. The shared parent package exposes these sources exactly once.
+
+The standalone BYOK default session also refuses redirects, keeping keys at the configured gateway.

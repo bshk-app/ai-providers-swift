@@ -79,11 +79,24 @@ private actor DeepgramStream: AISpeechStreaming {
         continuation.onTermination = { [weak self] _ in Task { await self?.cancel() } }
         socket.resume()
         do {
-            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-                socket.sendPing { error in if let error { continuation.resume(throwing: error) } else { continuation.resume() } }
-            }
+            let socket = socket
+            try await withTaskCancellationHandler {
+                try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                    socket.sendPing { error in if let error { continuation.resume(throwing: error) } else { continuation.resume() } }
+                }
+            } onCancel: { socket.cancel(with: .goingAway, reason: nil) }
         } catch { socket.cancel(with: .goingAway, reason: nil); throw error }
-        reader = Task { [weak self] in await self?.read() }
+        let socket = socket, output = continuation
+        reader = Task.detached { [weak self] in
+            do {
+                while !Task.isCancelled {
+                    let message = try await socket.receive()
+                    guard let owner = self else { throw CancellationError() }
+                    if try await owner.accept(message) { return }
+                }
+                throw CancellationError()
+            } catch { output.finish(throwing: error); socket.cancel(with: .goingAway, reason: nil); await self?.cancel() }
+        }
         keepalive = Task { [weak self] in
             while !Task.isCancelled {
                 do { try await Task.sleep(for: .seconds(4)); try Task.checkCancellation(); try await self?.ping() }
@@ -92,21 +105,17 @@ private actor DeepgramStream: AISpeechStreaming {
         }
     }
     private func ping() async throws { if !closing { try await socket.send(.string("{\"type\":\"KeepAlive\"}")) } }
-    private func read() async {
-        do {
-            while !Task.isCancelled {
-                let message = try await socket.receive()
-                let data: Data
-                switch message { case .data(let bytes): data = bytes; case .string(let text): data = Data(text.utf8); @unknown default: throw AIProviderError.invalidResponse }
-                guard data.count < 1_048_576 else { throw AIProviderError.outputLimit }
-                if let event = try parser.parse(data, finishing: closing) {
-                    if case .dropped = continuation.yield(event) { throw AIProviderError.outputLimit }
-                    if case .completed = event { continuation.finish(); keepalive?.cancel(); socket.cancel(with: .normalClosure, reason: nil); return }
-                }
-            }
-            throw CancellationError()
-        } catch { continuation.finish(throwing: error); keepalive?.cancel(); socket.cancel(with: .goingAway, reason: nil) }
+    private func accept(_ message: URLSessionWebSocketTask.Message) throws -> Bool {
+        let data: Data
+        switch message { case .data(let bytes): data = bytes; case .string(let text): data = Data(text.utf8); @unknown default: throw AIProviderError.invalidResponse }
+        guard data.count < 1_048_576 else { throw AIProviderError.outputLimit }
+        if let event = try parser.parse(data, finishing: closing) {
+            if case .dropped = continuation.yield(event) { throw AIProviderError.outputLimit }
+            if case .completed = event { continuation.finish(); keepalive?.cancel(); socket.cancel(with: .normalClosure, reason: nil); return true }
+        }
+        return false
     }
+    deinit { reader?.cancel(); keepalive?.cancel(); socket.cancel(with: .goingAway, reason: nil) }
     func send(_ pcm16: Data) async throws { guard !closing else { throw AIProviderError.interrupted }; try await socket.send(.data(pcm16)) }
     func finish() async throws {
         guard !closing else { return }; closing = true; keepalive?.cancel()

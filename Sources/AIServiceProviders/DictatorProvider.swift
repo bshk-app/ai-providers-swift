@@ -76,6 +76,7 @@ private final class DictatorSpeechStream: AISpeechStreaming, @unchecked Sendable
             } catch { pair.continuation.finish(throwing: error) }
         }
     }
+    deinit { reader.cancel(); let socket = socket; Task { await socket.close() } }
     func send(_ pcm16: Data) async throws { try await socket.sendAudio(pcm16) }
     func finish() async throws { try await socket.stop() }
     func cancel() async { reader.cancel(); await socket.close() }
