@@ -107,3 +107,22 @@ Contracts: [Featherless models](https://featherless.ai/docs/api-reference-models
 [Featherless plan](https://featherless.ai/docs/api-reference-plan),
 [OpenRouter models](https://openrouter.ai/docs/api/api-reference/models/list-all-models-and-their-properties),
 [OpenRouter key](https://openrouter.ai/docs/api/api-reference/api-keys/get-current-api-key).
+
+## Request diagnostics
+
+`AITextRequest` optionally accepts `requestID` and an `onProgress` callback.
+Numeric events report credentials ready (including refresh waits), HTTP response
+headers/status, first actual output text and completion. Times are cumulative,
+monotonic seconds since `generate()` began. Token usage is optional and only
+reported when present in the provider's response. Non-streaming providers report
+first output after their complete JSON response is available.
+
+`AINetworkMetrics.requestID` correlates DNS/connect/TLS/first-byte/total timing
+with text requests. Correlation uses a task delegate; no trace header is sent to
+the server. Other requests such as shared authentication refreshes can remain
+unscoped. Connect includes TLS; first-byte time starts at requestStartDate, so
+these intervals must not simply be added. Server queue/compute time cannot be
+separated without provider-supplied telemetry.
+
+No diagnostic event contains a prompt, model output, URL, header or credential.
+The SDK neither logs nor stores these events; the application owns the callback.

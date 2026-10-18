@@ -44,8 +44,11 @@ public struct AITextRequest: Sendable {
     public let instructions: String
     public let text: String
     public let latency: AITextLatency
-    public init(model: String, instructions: String, text: String, latency: AITextLatency = .standard) {
+    public let requestID: UUID
+    public let onProgress: (@Sendable (AITextProgress) -> Void)?
+    public init(model: String, instructions: String, text: String, latency: AITextLatency = .standard, requestID: UUID = UUID(), onProgress: (@Sendable (AITextProgress) -> Void)? = nil) {
         self.model = model; self.instructions = instructions; self.text = text; self.latency = latency
+        self.requestID = requestID; self.onProgress = onProgress
     }
 }
 public protocol AITextProviding: Sendable {

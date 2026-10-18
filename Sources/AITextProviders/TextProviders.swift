@@ -31,6 +31,7 @@ public struct OpenAITextProvider: AITextProviding {
         }.sorted { $0.id < $1.id }
     }
     public func generate(_ request: AITextRequest) async throws -> String {
+        let started = ContinuousClock.now
         try validateAuthEndpoint()
         // This body is supported by both API keys and the ChatGPT plan route.
         // Never add preview-unsupported sampling/token fields to the plan body.
@@ -39,25 +40,39 @@ public struct OpenAITextProvider: AITextProviding {
         if request.latency == .interactive, let effort = Self.interactiveEffort(for: request.model) {
             body["reasoning"] = ["effort": effort]
         }
-        var query = try await AIHTTP.request(AIEndpoint.url(endpoint, path: "responses"), token: credential(), method: "POST", json: body)
+        let token = try await credential()
+        request.report(.credentialsReady, since: started)
+        var query = try AIHTTP.request(AIEndpoint.url(endpoint, path: "responses"), token: token, method: "POST", json: body)
         query.setValue("text/event-stream", forHTTPHeaderField: "Accept")
-        let (bytes, response) = try await http.session.bytes(for: query)
+        let (bytes, response) = try await http.bytes(query, requestID: request.requestID)
         defer { bytes.task.cancel() }
+        request.report(.responseHeaders, since: started, statusCode: (response as? HTTPURLResponse)?.statusCode)
         try AIHTTP.check(response)
+        var reportedOutput = false
         var parser = ResponsesStreamParser()
         var lines = SSEByteLines()
         for try await byte in bytes {
             try Task.checkCancellation()
             if let line = try lines.accept(byte) {
                 try parser.accept(line)
+                if parser.hasOutput, !reportedOutput {
+                    reportedOutput = true; request.report(.firstOutput, since: started)
+                }
                 // response.completed is the terminal result. A gateway can
                 // keep the HTTP stream open afterwards; waiting for EOF loses
                 // valid output to a transport timeout minutes later.
-                if parser.isComplete { return try parser.result() }
+                if parser.isComplete {
+                    let result = try parser.result()
+                    request.report(.completed, since: started, usage: parser.usage)
+                    return result
+                }
             }
         }
         if let line = try lines.finish() { try parser.accept(line) }
-        return try parser.result()
+        let result = try parser.result()
+        if !reportedOutput { request.report(.firstOutput, since: started) }
+        request.report(.completed, since: started, usage: parser.usage)
+        return result
     }
     private func validateAuthEndpoint() throws {
         if auth == .chatGPTPlan, endpoint.absoluteString.trimmingCharacters(in: CharacterSet(charactersIn: "/")) != "https://api.openai.com/v1" { throw AIProviderError.unsupported }
@@ -104,6 +119,8 @@ public struct ResponsesStreamParser {
     private var data: [String] = []
     private var output = ""
     public private(set) var isComplete = false
+    public var hasOutput: Bool { !output.isEmpty }
+    public private(set) var usage: AITextUsage?
     public init() {}
     public mutating func accept(_ line: String) throws {
         if line.isEmpty { try flush(); return }
@@ -122,6 +139,11 @@ public struct ResponsesStreamParser {
         else if type == "response.completed" {
             guard let response = json["response"] as? [String: Any], response["status"] as? String == "completed" else { throw AIProviderError.interrupted }
             isComplete = true
+            if let counts = response["usage"] as? [String: Any] {
+                usage = .init(inputTokens: counts["input_tokens"] as? Int, outputTokens: counts["output_tokens"] as? Int,
+                              cachedInputTokens: (counts["input_tokens_details"] as? [String: Any])?["cached_tokens"] as? Int,
+                              reasoningTokens: (counts["output_tokens_details"] as? [String: Any])?["reasoning_tokens"] as? Int)
+            }
             if let items = response["output"] as? [[String: Any]] {
                 let text = items.flatMap { $0["content"] as? [[String: Any]] ?? [] }.filter { $0["type"] as? String == "output_text" }.compactMap { $0["text"] as? String }.joined()
                 if !text.isEmpty { output = text }
@@ -158,8 +180,13 @@ public struct AnthropicTextProvider: AITextProviding {
         }
     }
     public func generate(_ request: AITextRequest) async throws -> String {
-        let response = try await http.json(query("messages", body: ["model": request.model, "max_tokens": 4096,
-            "system": request.instructions, "messages": [["role": "user", "content": request.text]]]))
+        let started = ContinuousClock.now
+        let query = try await query("messages", body: ["model": request.model, "max_tokens": 4096,
+            "system": request.instructions, "messages": [["role": "user", "content": request.text]]])
+        request.report(.credentialsReady, since: started)
+        let response = try await http.json(query, requestID: request.requestID, onResponse: {
+            request.report(.responseHeaders, since: started, statusCode: $0)
+        })
         guard response["stop_reason"] as? String == "end_turn", let content = response["content"] as? [[String: Any]] else { throw AIProviderError.interrupted }
         let text = content.filter { $0["type"] as? String == "text" }.compactMap { $0["text"] as? String }.joined()
         guard !text.isEmpty else { throw AIProviderError.invalidResponse }; return text

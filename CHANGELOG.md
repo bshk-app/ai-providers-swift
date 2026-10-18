@@ -1,5 +1,11 @@
 # Changes
 
+## 0.2.1
+
+- Add opt-in, metadata-only text request phase events and optional token usage.
+- Correlate request-specific network metrics locally without trace headers.
+- Retain cancellation, response limits and redirect refusal in traced transports.
+
 ## 0.2.0
 
 - Add separate Featherless, OpenRouter and generic OpenAI-compatible Chat Completions clients; keep all compatible vendor model IDs and capability metadata.

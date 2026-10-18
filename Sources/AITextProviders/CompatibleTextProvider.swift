@@ -78,10 +78,16 @@ public struct CompatibleTextProvider: AIModelCatalogProviding {
     }
 
     public func generate(_ request: AITextRequest) async throws -> String {
+        let started = ContinuousClock.now
         let body: [String: Any] = ["model": request.model, "messages": [
             ["role": "system", "content": request.instructions], ["role": "user", "content": request.text]],
             "stream": false, "max_tokens": 4096]
-        let response = try await http.json(AIHTTP.request(AIEndpoint.url(endpoint, path: "chat/completions"), token: credential(), method: "POST", json: body))
+        let token = try await credential()
+        request.report(.credentialsReady, since: started)
+        let query = try AIHTTP.request(AIEndpoint.url(endpoint, path: "chat/completions"), token: token, method: "POST", json: body)
+        let response = try await http.json(query, requestID: request.requestID, onResponse: {
+            request.report(.responseHeaders, since: started, statusCode: $0)
+        })
         guard response["error"] == nil,
               let choices = response["choices"] as? [[String: Any]], let choice = choices.first,
               choice["finish_reason"] as? String == "stop", let message = choice["message"] as? [String: Any],
@@ -92,6 +98,13 @@ public struct CompatibleTextProvider: AIModelCatalogProviding {
             text = content.filter { ["text", "output_text"].contains($0["type"] as? String ?? "") }.compactMap { $0["text"] as? String }.joined()
         } else { throw AIProviderError.invalidResponse }
         guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw AIProviderError.invalidResponse }
+        request.report(.firstOutput, since: started)
+        let counts = response["usage"] as? [String: Any]
+        request.report(.completed, since: started, usage: counts.map {
+            .init(inputTokens: $0["prompt_tokens"] as? Int, outputTokens: $0["completion_tokens"] as? Int,
+                  cachedInputTokens: ($0["prompt_tokens_details"] as? [String: Any])?["cached_tokens"] as? Int,
+                  reasoningTokens: ($0["completion_tokens_details"] as? [String: Any])?["reasoning_tokens"] as? Int)
+        })
         return text
     }
 }

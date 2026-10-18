@@ -2,6 +2,7 @@ import Foundation
 
 /// Timing metadata only: no URL, headers, credentials or response content.
 public struct AINetworkMetrics: Sendable {
+    public let requestID: UUID?
     public let reusedConnection: Bool
     public let networkProtocol: String
     public let dnsSeconds: Double
@@ -9,7 +10,8 @@ public struct AINetworkMetrics: Sendable {
     public let tlsSeconds: Double
     public let firstByteSeconds: Double
     public let totalSeconds: Double
-    public init(_ transaction: URLSessionTaskTransactionMetrics) {
+    public init(_ transaction: URLSessionTaskTransactionMetrics, requestID: UUID? = nil) {
+        self.requestID = requestID
         func elapsed(_ start: Date?, _ end: Date?) -> Double {
             guard let start, let end else { return 0 }; return max(0, end.timeIntervalSince(start))
         }
@@ -29,16 +31,19 @@ public struct AINetworkMetrics: Sendable {
 public final class AIHTTP: @unchecked Sendable {
     public let session: URLSession
     private let ownsSession: Bool
+    private let onMetrics: (@Sendable (AINetworkMetrics) -> Void)?
     private final class Delegate: NSObject, URLSessionTaskDelegate {
         let onMetrics: (@Sendable (AINetworkMetrics) -> Void)?
-        init(onMetrics: (@Sendable (AINetworkMetrics) -> Void)?) { self.onMetrics = onMetrics }
+        let requestID: UUID?
+        init(onMetrics: (@Sendable (AINetworkMetrics) -> Void)?, requestID: UUID? = nil) { self.onMetrics = onMetrics; self.requestID = requestID }
         func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
                         newRequest request: URLRequest, completionHandler: @escaping (URLRequest?) -> Void) { completionHandler(nil) }
         func urlSession(_ session: URLSession, task: URLSessionTask, didFinishCollecting metrics: URLSessionTaskMetrics) {
-            for transaction in metrics.transactionMetrics { onMetrics?(AINetworkMetrics(transaction)) }
+            for transaction in metrics.transactionMetrics { onMetrics?(AINetworkMetrics(transaction, requestID: requestID)) }
         }
     }
     public init(session: URLSession? = nil, onMetrics: (@Sendable (AINetworkMetrics) -> Void)? = nil) {
+        self.onMetrics = onMetrics
         ownsSession = session == nil
         if let session { self.session = session }
         else {
@@ -53,15 +58,37 @@ public final class AIHTTP: @unchecked Sendable {
         guard (200..<300).contains(response.statusCode) else { throw AIProviderError.refused(response.statusCode) }
     }
     deinit { if ownsSession { session.invalidateAndCancel() } }
-    public func data(_ request: URLRequest) async throws -> Data {
+    public func bytes(_ request: URLRequest, requestID: UUID) async throws -> (URLSession.AsyncBytes, URLResponse) {
         try Task.checkCancellation()
-        let (data, response) = try await session.data(for: request)
-        try Self.check(response); try Task.checkCancellation()
+        // A task-specific delegate correlates metrics without sending trace IDs
+        // in HTTP headers. It retains the same no-redirect policy as the session.
+        return try await session.bytes(for: request, delegate: Delegate(onMetrics: onMetrics, requestID: requestID))
+    }
+    public func data(_ request: URLRequest, requestID: UUID? = nil, onResponse: (@Sendable (Int) -> Void)? = nil) async throws -> Data {
+        try Task.checkCancellation()
+        let data: Data
+        if let requestID {
+            let (bytes, response) = try await bytes(request, requestID: requestID)
+            defer { bytes.task.cancel() }
+            onResponse?((response as? HTTPURLResponse)?.statusCode ?? 0)
+            try Self.check(response)
+            var collected = Data()
+            for try await byte in bytes {
+                try Task.checkCancellation()
+                guard collected.count < 8 * 1024 * 1024 else { throw AIProviderError.outputLimit }
+                collected.append(byte)
+            }
+            data = collected
+        } else {
+            let (body, response) = try await session.data(for: request)
+            try Self.check(response); data = body
+        }
+        try Task.checkCancellation()
         guard data.count < 8 * 1024 * 1024 else { throw AIProviderError.outputLimit }
         return data
     }
-    public func json(_ request: URLRequest) async throws -> [String: Any] {
-        guard let value = try JSONSerialization.jsonObject(with: await data(request)) as? [String: Any] else { throw AIProviderError.invalidResponse }
+    public func json(_ request: URLRequest, requestID: UUID? = nil, onResponse: (@Sendable (Int) -> Void)? = nil) async throws -> [String: Any] {
+        guard let value = try JSONSerialization.jsonObject(with: await data(request, requestID: requestID, onResponse: onResponse)) as? [String: Any] else { throw AIProviderError.invalidResponse }
         return value
     }
     public static func request(_ url: URL, token: String, method: String = "GET", json: [String: Any]? = nil) throws -> URLRequest {
