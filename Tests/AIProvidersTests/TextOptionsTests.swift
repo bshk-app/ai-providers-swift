@@ -78,10 +78,13 @@ final class TextOptionsTests: XCTestCase {
         let provider = CompatibleTextProvider(endpoint: URL(string: "https://broker.example/v1")!, service: .openRouter, http: http(), credential: {
             XCTFail("Invalid settings must not read credentials"); return "fixture"
         })
-        do {
-            _ = try await provider.generate(.init(model: "m", instructions: "Correct.", text: "Original.", options: .init(routing: .init(only: ["https://unrelated.example/?key=value"]))))
-            XCTFail("Server IDs must be slugs, not URLs or credentials")
-        } catch { XCTAssertEqual(error as? AIProviderError, .invalidConfiguration) }
+        for invalid in ["https://unrelated.example/?key=value", "https://unrelated.example", "/groq", "groq/", "groq,,cerebras", ""] {
+            do {
+                _ = try await provider.generate(.init(model: "m", instructions: "Correct.", text: "Original.", options: .init(routing: .init(only: [invalid]))))
+                XCTFail("Server IDs must be slugs, not URLs or credentials")
+            } catch { XCTAssertEqual(error as? AIProviderError, .invalidConfiguration) }
+        }
+        XCTAssertNoThrow(try AIProviderRouting(only: ["cerebras/fp16", "amazon-bedrock/eu-west-1"]).validate())
     }
 
     func testExplicitOpenAIEffortOverridesExistingInteractivePreset() async throws {

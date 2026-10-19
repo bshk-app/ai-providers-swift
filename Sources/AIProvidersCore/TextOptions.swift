@@ -31,9 +31,9 @@ public struct AIProviderRouting: Codable, Equatable, Sendable {
     }
     public var isDefault: Bool { sort == nil && only.isEmpty && allowFallbacks }
     public func validate() throws {
-        let allowed = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_/.:+")
+        let slug = #"^[A-Za-z0-9][A-Za-z0-9._+\-]*(/[A-Za-z0-9][A-Za-z0-9._+\-]*)*$"#
         guard only.count <= 16, Set(only).count == only.count,
-              only.allSatisfy({ !$0.isEmpty && $0.utf8.count <= 128 && $0.unicodeScalars.allSatisfy(allowed.contains) }) else {
+              only.allSatisfy({ $0.utf8.count <= 128 && $0.range(of: slug, options: .regularExpression) != nil }) else {
             throw AIProviderError.invalidConfiguration
         }
     }
