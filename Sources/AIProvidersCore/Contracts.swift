@@ -21,8 +21,10 @@ public struct AIModel: Codable, Identifiable, Equatable, Sendable {
     public var operations: Set<AIOperation>
     public var contextLength: Int?
     public var available: Bool?
-    public init(id: String, name: String, kind: AIModelKind, operations: Set<AIOperation>, contextLength: Int? = nil, available: Bool? = nil) {
+    public var reasoning: AIReasoningCapabilities?
+    public init(id: String, name: String, kind: AIModelKind, operations: Set<AIOperation>, contextLength: Int? = nil, available: Bool? = nil, reasoning: AIReasoningCapabilities? = nil) {
         self.id = id; self.name = name; self.kind = kind; self.operations = operations; self.contextLength = contextLength; self.available = available
+        self.reasoning = reasoning
     }
 }
 public struct AIModelPage: Sendable {
@@ -36,7 +38,10 @@ public struct AIModelPage: Sendable {
 public struct AISelection: Codable, Equatable, Sendable {
     public let connectionID: UUID
     public let modelID: String
-    public init(connectionID: UUID, modelID: String) { self.connectionID = connectionID; self.modelID = modelID }
+    public let options: AITextOptions?
+    public init(connectionID: UUID, modelID: String, options: AITextOptions? = nil) {
+        self.connectionID = connectionID; self.modelID = modelID; self.options = options?.isDefault == true ? nil : options
+    }
 }
 public enum AITextLatency: Sendable { case standard, interactive }
 public struct AITextRequest: Sendable {
@@ -44,10 +49,12 @@ public struct AITextRequest: Sendable {
     public let instructions: String
     public let text: String
     public let latency: AITextLatency
+    public let options: AITextOptions
     public let requestID: UUID
     public let onProgress: (@Sendable (AITextProgress) -> Void)?
-    public init(model: String, instructions: String, text: String, latency: AITextLatency = .standard, requestID: UUID = UUID(), onProgress: (@Sendable (AITextProgress) -> Void)? = nil) {
+    public init(model: String, instructions: String, text: String, latency: AITextLatency = .standard, options: AITextOptions = .init(), requestID: UUID = UUID(), onProgress: (@Sendable (AITextProgress) -> Void)? = nil) {
         self.model = model; self.instructions = instructions; self.text = text; self.latency = latency
+        self.options = options
         self.requestID = requestID; self.onProgress = onProgress
     }
 }
@@ -93,10 +100,12 @@ public protocol AITranslationProviding: Sendable {
 }
 public enum AIProviderError: Error, LocalizedError, Equatable {
     case insecureEndpoint, missingCredential, unsupported, invalidResponse, interrupted, outputLimit
+    case invalidConfiguration
     case degradedRecognition
     case refused(Int)
     public var errorDescription: String? {
         switch self {
+        case .invalidConfiguration: return "Check the reasoning level and server preferences for this model."
         case .insecureEndpoint: return "Use a secure HTTPS endpoint without credentials or query parameters."
         case .missingCredential: return "Reconnect this provider or add your API key."
         case .unsupported: return "This connection does not support the selected operation."

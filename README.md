@@ -126,3 +126,31 @@ separated without provider-supplied telemetry.
 
 No diagnostic event contains a prompt, model output, URL, header or credential.
 The SDK neither logs nor stores these events; the application owns the callback.
+
+## Per-model reasoning and server routing
+
+`AISelection.options` optionally persists `AITextOptions` for one operation and
+model. Old saved selections and catalogs still decode without options. Pass the
+captured options into `AITextRequest`; changing preferences must affect the next
+recording, not an in-flight correction or translation.
+
+OpenRouter catalog reasoning metadata becomes `AIModel.reasoning`: use
+`availableEfforts` for an effort picker and `fastestEffort` for an explicit fast
+preset. Mandatory reasoning excludes `none`. Unknown model metadata does not
+justify guessing an effort from its name or silently disabling reasoning.
+
+```swift
+let options = AITextOptions(
+    reasoningEffort: .low,
+    routing: .init(sort: .latency, only: ["groq"], allowFallbacks: false))
+let text = try await router.generate(.init(
+    model: modelID, instructions: instructions, text: transcript, options: options))
+```
+
+OpenRouter receives `reasoning.effort`, `reasoning.exclude`, and `provider`
+preferences. Explicit effort requires parameter support, avoiding silent drops.
+Direct compatible servers receive `reasoning_effort`; OpenAI Responses receives
+`reasoning.effort` and explicit effort overrides the existing interactive preset.
+Routing preferences on non-OpenRouter services are rejected before credential
+reads. Anthropic does not expose this normalized control in this version.
+No inference retry or implicit paid provider/model fallback is introduced.

@@ -73,15 +73,43 @@ public struct CompatibleTextProvider: AIModelCatalogProviding {
         // unambiguous standard non-chat IDs, without a GPT/vendor allowlist.
         if architecture == nil, inputs == nil, outputs == nil,
            ["text-embedding-", "tts-", "whisper-", "gpt-image-", "dall-e-"].contains(where: id.hasPrefix) { return nil }
+        let reasoning: AIReasoningCapabilities?
+        if let metadata = item["reasoning"] as? [String: Any] {
+            let efforts: [AIReasoningEffort]
+            if metadata["supported_efforts"] is NSNull {
+                efforts = AIReasoningEffort.allCases.filter { $0 != .instant }
+            } else {
+                efforts = (metadata["supported_efforts"] as? [String] ?? []).compactMap(AIReasoningEffort.init(rawValue:))
+            }
+            reasoning = .init(supportedEfforts: efforts, mandatory: metadata["mandatory"] as? Bool ?? false)
+        } else { reasoning = nil }
         return .init(id: id, name: item["name"] as? String ?? id, kind: .text, operations: [.textEditing, .translation],
-                     contextLength: item["context_length"] as? Int, available: item["available_on_current_plan"] as? Bool)
+                     contextLength: item["context_length"] as? Int, available: item["available_on_current_plan"] as? Bool, reasoning: reasoning)
     }
 
     public func generate(_ request: AITextRequest) async throws -> String {
         let started = ContinuousClock.now
-        let body: [String: Any] = ["model": request.model, "messages": [
+        try request.options.routing?.validate()
+        if service != .openRouter, request.options.routing?.isDefault == false { throw AIProviderError.unsupported }
+        var body: [String: Any] = ["model": request.model, "messages": [
             ["role": "system", "content": request.instructions], ["role": "user", "content": request.text]],
             "stream": false, "max_tokens": 4096]
+        if let effort = request.options.reasoningEffort {
+            if service == .openRouter { body["reasoning"] = ["effort": effort.rawValue, "exclude": true] }
+            else { body["reasoning_effort"] = effort.rawValue }
+        }
+        if service == .openRouter {
+            var routing: [String: Any] = [:]
+            if let options = request.options.routing, !options.isDefault {
+                if let sort = options.sort { routing["sort"] = sort.rawValue }
+                if !options.only.isEmpty { routing["only"] = options.only }
+                routing["allow_fallbacks"] = options.allowFallbacks
+            }
+            // An explicitly chosen effort must not be silently dropped by a
+            // server that does not implement it.
+            if request.options.reasoningEffort != nil { routing["require_parameters"] = true }
+            if !routing.isEmpty { body["provider"] = routing }
+        }
         let token = try await credential()
         request.report(.credentialsReady, since: started)
         let query = try AIHTTP.request(AIEndpoint.url(endpoint, path: "chat/completions"), token: token, method: "POST", json: body)

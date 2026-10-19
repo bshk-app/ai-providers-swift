@@ -33,11 +33,14 @@ public struct OpenAITextProvider: AITextProviding {
     public func generate(_ request: AITextRequest) async throws -> String {
         let started = ContinuousClock.now
         try validateAuthEndpoint()
+        guard request.options.routing?.isDefault != false, request.options.reasoningEffort != .instant else { throw AIProviderError.unsupported }
         // This body is supported by both API keys and the ChatGPT plan route.
         // Never add preview-unsupported sampling/token fields to the plan body.
         var body: [String: Any] = ["model": request.model, "instructions": request.instructions,
             "input": [["role": "user", "content": request.text]], "store": false, "stream": true]
-        if request.latency == .interactive, let effort = Self.interactiveEffort(for: request.model) {
+        if let effort = request.options.reasoningEffort {
+            body["reasoning"] = ["effort": effort.rawValue]
+        } else if request.latency == .interactive, let effort = Self.interactiveEffort(for: request.model) {
             body["reasoning"] = ["effort": effort]
         }
         let token = try await credential()
@@ -181,6 +184,7 @@ public struct AnthropicTextProvider: AITextProviding {
     }
     public func generate(_ request: AITextRequest) async throws -> String {
         let started = ContinuousClock.now
+        guard request.options.isDefault else { throw AIProviderError.unsupported }
         let query = try await query("messages", body: ["model": request.model, "max_tokens": 4096,
             "system": request.instructions, "messages": [["role": "user", "content": request.text]]])
         request.report(.credentialsReady, since: started)
